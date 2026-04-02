@@ -86,6 +86,9 @@ def escrever_excel(excel_path, mapa_dados):
     wb = load_workbook(excel_path)
     ws = wb["COMITENTES"]
 
+    col_inicio = 12  # coluna L
+    MAX_COLUNAS_PLANILHA = 6  # limite máximo estrutural
+
     linha = 2
 
     while True:
@@ -99,22 +102,42 @@ def escrever_excel(excel_path, mapa_dados):
         if cpf_norm in mapa_dados:
             ws[f"I{linha}"] = "ok"
 
-            # pega o PRIMEIRO registro (critério atual)
             registro = mapa_dados[cpf_norm][0]
-            votos = registro["votos"]
+            votos_originais = registro["votos"]
 
-            col_inicio = 12  # coluna L
+            if len(votos_originais) > MAX_COLUNAS_PLANILHA:
+                print(
+                    f"CPF {cpf_norm} tem {len(votos_originais)} votos, "
+                    f"mas o máximo permitido é {MAX_COLUNAS_PLANILHA}."
+                )
 
-            for i, voto in enumerate(votos):
-                ws.cell(row=linha, column=col_inicio + i).value = voto.lower()
+            for i, voto in enumerate(votos_originais):
+                if i >= MAX_COLUNAS_PLANILHA:
+                    break
+
+                col_atual = col_inicio + i
+                celula = ws.cell(row=linha, column=col_atual)
+
+                # NÃO sobrescrever se já tem dado 
+                if celula.value not in (None, ""):
+                    print(
+                        f"Parando escrita - CPF {cpf_norm}, "
+                        f"linha {linha}, coluna {col_atual} já possui valor: {celula.value}"
+                    )
+                    break
+
+                celula.value = voto.lower()
 
         else:
             ws[f"I{linha}"] = "fora"
 
         linha += 1
 
-    wb.save(excel_path)
-    print("\n Planilha atualizada com sucesso!")
+    novo_arquivo = excel_path.replace(".xlsx", "_atualizado.xlsx")
+    wb.save(novo_arquivo)
+
+    print("\nPlanilha atualizada com sucesso!")
+    print(f"Salva em: {novo_arquivo}")
 
 
 def main():
