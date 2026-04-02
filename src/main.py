@@ -45,6 +45,9 @@ def processar_dados(base_path):
     for empresa in empresas:
         arquivos = listar_arquivos_empresa(base_path, empresa)
 
+        if not arquivos:
+            print(f'Pasta da {empresa} está vazia')
+
         for arquivo in arquivos:
             cpf, votos = extrair_dados(arquivo)
 
