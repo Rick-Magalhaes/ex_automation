@@ -4,7 +4,7 @@ from openpyxl import load_workbook
 
 
 def obter_caminhos():
-    print("=== CONFIGURAÇÃO ===")
+    print("=== INICIO ===")
     base_path = input("Digite o caminho da pasta com as empresas: ").strip()
     excel_path = input("Digite o caminho da planilha Excel: ").strip()
 
