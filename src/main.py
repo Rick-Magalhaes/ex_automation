@@ -33,6 +33,7 @@ ASSESSORES_LEGAIS: dict[str, str] = {
     "MM":  "Machado Meyer Advogados",
     "FEL": "Felsberg Advogados",
     "CTP": "Costa Tavares Paes Advogados",
+    "SOB": "Sacramone, Orleans e Bragança Advogados"
 }
 
 ASSESSORES_FINANCEIROS: dict[str, str] = {
