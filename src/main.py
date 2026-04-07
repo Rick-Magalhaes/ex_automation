@@ -1,163 +1,260 @@
+"""
+Automação de Votação — versão otimizada
+"""
+
+import logging
 import os
+import re
+import unicodedata
 from collections import defaultdict
+from pathlib import Path
+from typing import Optional
+
 from openpyxl import load_workbook
+from rapidfuzz import fuzz
+
+# =========================
+#  CONFIGURAÇÃO
+# =========================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s | %(message)s",
+)
+log = logging.getLogger(__name__)
+
+FUZZY_THRESHOLD = 85
+MIN_PALAVRAS_SUBSET = 2
+COL_INICIO = 12  # coluna L
+COL_STATUS = "I"
+COL_NOME = "D"
+
+ASSESSORES_LEGAIS: dict[str, str] = {
+    "PGA": "Pinheiro Guimarães Advogados & CSW Advogados",
+    "MM":  "Machado Meyer Advogados",
+    "FEL": "Felsberg Advogados",
+    "CTP": "Costa Tavares Paes Advogados",
+}
+
+ASSESSORES_FINANCEIROS: dict[str, str] = {
+    "BR":   "BR partners",
+    "G5":   "G5 partners consultoria",
+    "JNEY": "Journey Capital",
+    "VIR":  "Virtus",
+}
+
+MAPA_VOTOS: dict[str, str] = {
+    "A":  "sim",
+    "R":  "não",
+    "AB": "ab",
+}
 
 
-def obter_caminhos():
-    print("=== INICIO ===")
-    base_path = input("Digite o caminho da pasta com as empresas: ").strip()
-    excel_path = input("Digite o caminho da planilha Excel: ").strip()
-
-    return base_path, excel_path
-
-
-def listar_empresas(base_path):
-    return [
-        pasta for pasta in os.listdir(base_path)
-        if os.path.isdir(os.path.join(base_path, pasta))
-    ]
+# =========================
+#  NORMALIZAÇÃO
+# =========================
+def normalizar_nome(nome: str) -> str:
+    """Remove acentos, caracteres especiais e normaliza espaços."""
+    nome = str(nome).upper()
+    nome = unicodedata.normalize("NFKD", nome)
+    nome = "".join(c for c in nome if not unicodedata.combining(c))
+    nome = re.sub(r"[^A-Z0-9 ]", " ", nome)
+    return " ".join(nome.split())
 
 
-def listar_arquivos_empresa(base_path, empresa):
-    empresa_path = os.path.join(base_path, empresa)
-
-    return [
-        arquivo for arquivo in os.listdir(empresa_path)
-        if arquivo.lower().endswith(".pdf")
-    ]
-
-
-def extrair_dados(nome_arquivo):
-    nome_limpo = os.path.splitext(nome_arquivo)[0]
-    partes = [p.strip() for p in nome_limpo.split("-")]
-
-    cpf = partes[0]
-    votos = partes[1:]
-
-    return cpf, votos
+# =========================
+#  LEITURA DE ARQUIVOS
+# =========================
+def listar_arquivos_empresa(base_path: Path, empresa: str) -> list[Path]:
+    caminho = base_path / empresa
+    arquivos = [f for f in caminho.iterdir() if f.is_file()]
+    if not arquivos:
+        log.warning("Pasta vazia: %s", empresa)
+    return arquivos
 
 
-def processar_dados(base_path):
-    dados = []
+def extrair_dados(caminho_arquivo: Path) -> tuple[Optional[str], list[str]]:
+    """
+    Extrai nome normalizado e lista de votos a partir do nome do arquivo.
+    Retorna (None, []) em caso de formato inválido.
+    """
+    stem = caminho_arquivo.stem.replace('"', "")
+    partes = stem.split("-", maxsplit=1)
 
-    empresas = listar_empresas(base_path)
+    if len(partes) < 2:
+        log.warning("Nome fora do padrão: %s", caminho_arquivo.name)
+        return None, []
+
+    nome = partes[0].strip()
+    votos = [v.strip() for v in partes[1].split(";")]
+    return normalizar_nome(nome), votos
+
+
+# =========================
+#  PROCESSAMENTO
+# =========================
+def processar_dados(base_path: Path) -> dict[str, list[dict]]:
+    mapa_dados: dict[str, list[dict]] = defaultdict(list)
+
+    empresas = [p.name for p in base_path.iterdir() if p.is_dir()]
+    if not empresas:
+        log.warning("Nenhuma pasta de empresa encontrada em: %s", base_path)
+        return mapa_dados
 
     for empresa in empresas:
-        arquivos = listar_arquivos_empresa(base_path, empresa)
-
-        if not arquivos:
-            print(f'Pasta da {empresa} está vazia')
-
-        for arquivo in arquivos:
-            cpf, votos = extrair_dados(arquivo)
-
-            dados.append({
+        for arquivo in listar_arquivos_empresa(base_path, empresa):
+            nome, votos = extrair_dados(arquivo)
+            if not nome:
+                continue
+            mapa_dados[nome].append({
                 "empresa": empresa,
-                "cpf": cpf,
-                "votos": votos,
-                "arquivo": arquivo
+                "votos":   votos,
+                "arquivo": str(arquivo),
             })
 
-    return dados
-
-
-def normalizar_cpf(cpf):
-    return str(cpf).replace(".", "").replace("-", "").strip()
-
-
-def construir_mapa(dados):
-    mapa = defaultdict(list)
-
-    for item in dados:
-        cpf = normalizar_cpf(item["cpf"])
-        mapa[cpf].append(item)
-
-    # coment rick: detecção de duplicados
-    duplicados = {cpf: itens for cpf, itens in mapa.items() if len(itens) > 1}
-
+    duplicados = {n: r for n, r in mapa_dados.items() if len(r) > 1}
     if duplicados:
-        print("\nCPFs duplicados encontrados:")
-        for cpf, itens in duplicados.items():
-            print(f"\nCPF: {cpf}")
-            for i in itens:
-                print(f" - Empresa: {i['empresa']} | Arquivo: {i['arquivo']}")
+        log.warning("Duplicados encontrados:")
+        for nome, registros in duplicados.items():
+            log.warning("  %s — %d arquivos", nome, len(registros))
 
-    return mapa
+    return mapa_dados
 
 
-def escrever_excel(excel_path, mapa_dados):
+# =========================
+#  MATCH DE NOMES
+# =========================
+def encontrar_nome_aproximado(
+    nome_planilha: str,
+    mapa_dados: dict[str, list[dict]],
+    usados: set[str],
+) -> Optional[str]:
+    """
+    Tenta casar nome_planilha com uma chave em mapa_dados.
+    Prioridade:
+      1. Subconjunto exato de palavras (mínimo MIN_PALAVRAS_SUBSET)
+      2. Fuzzy matching acima de FUZZY_THRESHOLD
+    """
+    palavras_planilha = set(nome_planilha.split())
+    melhor_match: Optional[str] = None
+    melhor_score = 0
+
+    for nome_arquivo, _ in mapa_dados.items():
+        if nome_arquivo in usados:
+            continue
+
+        palavras_arquivo = set(nome_arquivo.split())
+
+        # Regra 1: subconjunto seguro
+        if (
+            len(palavras_arquivo) >= MIN_PALAVRAS_SUBSET
+            and palavras_arquivo.issubset(palavras_planilha)
+        ):
+            usados.add(nome_arquivo)
+            return nome_arquivo
+
+        # Ignora nomes muito genéricos
+        if len(palavras_arquivo) < 2:
+            continue
+
+        # Regra 2: fuzzy
+        score = fuzz.token_sort_ratio(nome_planilha, nome_arquivo)
+        if score > melhor_score:
+            melhor_score = score
+            melhor_match = nome_arquivo
+
+    if melhor_match and melhor_score >= FUZZY_THRESHOLD:
+        usados.add(melhor_match)
+        return melhor_match
+
+    return None
+
+
+def traduzir_voto(valor: str) -> str:
+    """Converte código de voto para texto legível."""
+    valor = valor.strip().upper()
+    if valor in MAPA_VOTOS:
+        return MAPA_VOTOS[valor]
+    if valor in ASSESSORES_LEGAIS:
+        return ASSESSORES_LEGAIS[valor]
+    if valor in ASSESSORES_FINANCEIROS:
+        return ASSESSORES_FINANCEIROS[valor]
+    return valor
+
+
+# =========================
+#  EXCEL
+# =========================
+def detectar_colunas_itens(ws, col_inicio: int) -> int:
+    """Conta colunas de itens a partir de col_inicio até None ou 'SÉRIE'."""
+    col = col_inicio
+    while True:
+        valor = ws.cell(row=1, column=col).value
+        if valor is None:
+            break
+        if isinstance(valor, str) and "SÉRIE" in valor.upper():
+            break
+        col += 1
+    total = col - col_inicio
+    log.info("Colunas de itens detectadas: %d", total)
+    return total
+
+
+def escrever_excel(excel_path: Path, mapa_dados: dict[str, list[dict]]) -> Path:
     wb = load_workbook(excel_path)
     ws = wb["COMITENTES"]
 
-    col_inicio = 12  # coluna L
-    MAX_COLUNAS_PLANILHA = 6  # limite máximo estrutural
+    max_colunas_itens = detectar_colunas_itens(ws, COL_INICIO)
+    usados: set[str] = set()
 
     linha = 2
+    encontrados = nao_encontrados = 0
 
     while True:
-        cpf_planilha = ws[f"E{linha}"].value
-
-        if cpf_planilha is None:
+        nome_planilha = ws[f"{COL_NOME}{linha}"].value
+        if nome_planilha is None:
             break
 
-        cpf_norm = normalizar_cpf(cpf_planilha)
+        nome_norm = normalizar_nome(nome_planilha)
+        nome_match = encontrar_nome_aproximado(nome_norm, mapa_dados, usados)
 
-        if cpf_norm in mapa_dados:
-            ws[f"I{linha}"] = "ok"
-
-            registro = mapa_dados[cpf_norm][0]
-            votos_originais = registro["votos"]
-
-            if len(votos_originais) > MAX_COLUNAS_PLANILHA:
-                print(
-                    f"CPF {cpf_norm} tem {len(votos_originais)} votos, "
-                    f"mas o máximo permitido é {MAX_COLUNAS_PLANILHA}."
-                )
-
-            for i, voto in enumerate(votos_originais):
-                if i >= MAX_COLUNAS_PLANILHA:
-                    break
-
-                col_atual = col_inicio + i
-                celula = ws.cell(row=linha, column=col_atual)
-
-                # NÃO sobrescrever se já tem dado 
-                if celula.value not in (None, ""):
-                    print(
-                        f"Parando escrita - CPF {cpf_norm}, "
-                        f"linha {linha}, coluna {col_atual} já possui valor: {celula.value}"
-                    )
-                    break
-
-                celula.value = voto.lower()
-
+        if nome_match:
+            votos = mapa_dados[nome_match][0]["votos"]
+            ws[f"{COL_STATUS}{linha}"] = "ok"
+            for i in range(min(max_colunas_itens, len(votos))):
+                ws.cell(row=linha, column=COL_INICIO + i).value = traduzir_voto(votos[i])
+            encontrados += 1
         else:
-            ws[f"I{linha}"] = "fora"
+            ws[f"{COL_STATUS}{linha}"] = "fora"
+            nao_encontrados += 1
 
         linha += 1
 
-    novo_arquivo = excel_path.replace(".xlsx", "_atualizado.xlsx")
+    novo_arquivo = excel_path.with_stem(excel_path.stem + "_atualizado")
     wb.save(novo_arquivo)
 
-    print("\nPlanilha atualizada com sucesso!")
-    print(f"Salva em: {novo_arquivo}")
+    log.info("Planilha atualizada: %s", novo_arquivo)
+    log.info("Encontrados: %d | Não encontrados: %d", encontrados, nao_encontrados)
+    return novo_arquivo
 
 
-def main():
-    base_path, excel_path = obter_caminhos()
+# =========================
+#  MAIN
+# =========================
+def main() -> None:
+    print("=== Automação de Votação ===\n")
 
-    if not os.path.exists(base_path):
-        print("Caminho da pasta inválido!")
+    base_path = Path(input("Caminho da pasta com arquivos: ").strip())
+    excel_path = Path(input("Caminho do arquivo Excel: ").strip())
+
+    if not base_path.is_dir():
+        log.error("Caminho da pasta inválido: %s", base_path)
         return
 
-    if not os.path.exists(excel_path):
-        print("Caminho do Excel inválido!")
+    if not excel_path.is_file():
+        log.error("Caminho do Excel inválido: %s", excel_path)
         return
 
-    dados = processar_dados(base_path)
-
-    mapa_dados = construir_mapa(dados)
-
+    mapa_dados = processar_dados(base_path)
     escrever_excel(excel_path, mapa_dados)
 
 
