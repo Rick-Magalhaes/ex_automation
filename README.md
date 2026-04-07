@@ -115,12 +115,6 @@ INFO | Encontrados: 18 | Não encontrados: 0
 
 Executável (.exe)
 
-Se você gerar um .exe com PyInstaller:
-
-pyinstaller --onefile main.py
-
-✔ Pode enviar só o .exe
-✔ Não precisa enviar Python nem bibliotecas
 
 Apenas garanta que o usuário tenha:
 
