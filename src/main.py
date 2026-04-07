@@ -85,7 +85,8 @@ def extrair_dados(caminho_arquivo: Path) -> tuple[Optional[str], list[str]]:
         return None, []
 
     nome = partes[0].strip()
-    votos = [v.strip() for v in partes[1].split(";")]
+    votos_str = partes[1].rstrip(",").strip()
+    votos = [v.strip() for v in votos_str.split(";") if v.strip()]
     return normalizar_nome(nome), votos
 
 
@@ -171,7 +172,7 @@ def encontrar_nome_aproximado(
 
 def traduzir_voto(valor: str) -> str:
     """Converte código de voto para texto legível."""
-    valor = valor.strip().upper()
+    valor = re.sub(r"[^A-Z0-9]", "", valor.strip().upper())  # remove vírgulas, pontos, etc.
     if valor in MAPA_VOTOS:
         return MAPA_VOTOS[valor]
     if valor in ASSESSORES_LEGAIS:
