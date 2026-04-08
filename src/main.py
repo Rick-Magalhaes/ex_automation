@@ -55,7 +55,7 @@ entrada = "SIM"
 entrada = "NÃO"
 
 resultado = MAPA_VOTOS.get(entrada.lower())
-print(resultado)
+
 
 # =========================
 #  NORMALIZAÇÃO
@@ -67,6 +67,7 @@ def normalizar_nome(nome: str) -> str:
     nome = "".join(c for c in nome if not unicodedata.combining(c))
     nome = re.sub(r"[^A-Z0-9 ]", " ", nome)
     return " ".join(nome.split())
+
 
 
 # =========================
