@@ -33,7 +33,6 @@ ASSESSORES_LEGAIS: dict[str, str] = {
     "MM":  "Machado Meyer Advogados",
     "FEL": "Felsberg Advogados",
     "CTP": "Costa Tavares Paes Advogados",
-    "SOB": "Sacramone, Orleans e Bragança Advogados"
 }
 
 ASSESSORES_FINANCEIROS: dict[str, str] = {
@@ -48,10 +47,15 @@ MAPA_VOTOS: dict[str, str] = {
     "R":  "não",
     "AB": "ab",
     "NV": "nv",
+    "não": "não",
     "sim": "sim",
-    "Não": "não",
 }
 
+entrada = "SIM"
+entrada = "NÃO"
+
+resultado = MAPA_VOTOS.get(entrada.lower())
+print(resultado)
 
 # =========================
 #  NORMALIZAÇÃO
@@ -82,7 +86,7 @@ def extrair_dados(caminho_arquivo: Path) -> tuple[Optional[str], list[str]]:
     Retorna (None, []) em caso de formato inválido.
     """
     stem = caminho_arquivo.stem.replace('"', "")
-    partes = stem.split("-", maxsplit=1)
+    partes = re.split(r"\s*[-–—]\s*", stem, maxsplit=1)
 
     if len(partes) < 2:
         log.warning("Nome fora do padrão: %s", caminho_arquivo.name)
@@ -136,10 +140,16 @@ def encontrar_nome_aproximado(
     """
     Tenta casar nome_planilha com uma chave em mapa_dados.
     Prioridade:
-      1. Subconjunto exato de palavras (mínimo MIN_PALAVRAS_SUBSET)
-      2. Fuzzy matching acima de FUZZY_THRESHOLD
+      1. Subconjunto exato: todas as palavras sig. do arquivo estão na planilha
+      2. Interseção alta: palavras que batem cobrem >= 80% de ambos os lados
+      3. Fuzzy matching acima de FUZZY_THRESHOLD
     """
-    palavras_planilha = set(nome_planilha.split())
+    STOPWORDS = {"DE", "DA", "DO", "DAS", "DOS", "E", "EM", "A", "O", "AS", "OS"}
+
+    def palavras_significativas(nome: str) -> set[str]:
+        return {p for p in nome.split() if p not in STOPWORDS and len(p) > 2}
+
+    palavras_sig_planilha = palavras_significativas(nome_planilha)
     melhor_match: Optional[str] = None
     melhor_score = 0
 
@@ -147,22 +157,29 @@ def encontrar_nome_aproximado(
         if nome_arquivo in usados:
             continue
 
-        palavras_arquivo = set(nome_arquivo.split())
+        palavras_sig_arquivo = palavras_significativas(nome_arquivo)
 
-        # Regra 1: subconjunto seguro
-        if (
-            len(palavras_arquivo) >= MIN_PALAVRAS_SUBSET
-            and palavras_arquivo.issubset(palavras_planilha)
-        ):
+        if len(palavras_sig_arquivo) < MIN_PALAVRAS_SUBSET:
+            continue
+
+        intersecao = palavras_sig_arquivo & palavras_sig_planilha
+
+        # Regra 1: subconjunto exato (arquivo ⊆ planilha)
+        if palavras_sig_arquivo.issubset(palavras_sig_planilha):
             usados.add(nome_arquivo)
             return nome_arquivo
 
-        # Ignora nomes muito genéricos
-        if len(palavras_arquivo) < 2:
-            continue
+        # Regra 2: todas as palavras da planilha estão no arquivo (planilha é subconjunto do arquivo)
+        # Cobre casos como "Erick Yamada" (planilha) vs "Erick dos Santos Yamada" (arquivo)
+        if palavras_sig_planilha.issubset(palavras_sig_arquivo):
+            usados.add(nome_arquivo)
+            return nome_arquivo
 
-        # Regra 2: fuzzy
-        score = fuzz.token_sort_ratio(nome_planilha, nome_arquivo)
+        # Regra 3: fuzzy sobre palavras significativas
+        score = fuzz.token_sort_ratio(
+            " ".join(sorted(palavras_sig_planilha)),
+            " ".join(sorted(palavras_sig_arquivo)),
+        )
         if score > melhor_score:
             melhor_score = score
             melhor_match = nome_arquivo
@@ -229,7 +246,7 @@ def escrever_excel(excel_path: Path, mapa_dados: dict[str, list[dict]]) -> Path:
                 ws.cell(row=linha, column=COL_INICIO + i).value = traduzir_voto(votos[i])
             encontrados += 1
         else:
-            ws[f"{COL_STATUS}{linha}"] = "fora"
+            log.info("Sem match: %s", nome_planilha)
             nao_encontrados += 1
 
         linha += 1
