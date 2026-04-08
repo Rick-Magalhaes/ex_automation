@@ -47,6 +47,7 @@ MAPA_VOTOS: dict[str, str] = {
     "A":  "sim",
     "R":  "não",
     "AB": "ab",
+    "NV": "nv",
 }
 
 
