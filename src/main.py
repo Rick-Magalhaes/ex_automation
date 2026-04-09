@@ -222,15 +222,27 @@ def detectar_colunas_itens(ws, col_inicio: int) -> int:
     return total
 
 
-def escrever_excel(excel_path: Path, mapa_dados: dict[str, list[dict]]) -> Path:
+def escrever_excel(
+    excel_path: Path,
+    mapa_dados: dict[str, list[dict]],
+) -> tuple[Path, dict[str, Optional[str]]]:
+    """
+    Preenche o Excel e retorna (caminho_salvo, resultado_matches).
+
+    resultado_matches: { nome_arquivo -> nome_planilha matched (ou None se não encontrou) }
+    Arquivos que já estavam com 'ok' não entram no resultado (já foram processados antes).
+    """
     wb = load_workbook(excel_path)
     ws = wb["COMITENTES"]
 
     max_colunas_itens = detectar_colunas_itens(ws, COL_INICIO)
     usados: set[str] = set()
 
+    # resultado_matches: chave = nome_arquivo, valor = nome_planilha que fez match (ou None)
+    resultado_matches: dict[str, Optional[str]] = {}
+
     linha = 2
-    encontrados = nao_encontrados = 0
+    encontrados = nao_encontrados = pulados = 0
 
     while True:
         nome_planilha = ws[f"{COL_NOME}{linha}"].value
@@ -238,13 +250,30 @@ def escrever_excel(excel_path: Path, mapa_dados: dict[str, list[dict]]) -> Path:
             break
 
         nome_norm = normalizar_nome(nome_planilha)
+
+        # Se a linha já tem status "ok", marca o arquivo como usado para a auditoria
+        status_atual = ws[f"{COL_STATUS}{linha}"].value
+        if status_atual == "ok":
+            log.info("Já preenchido, pulando: %s", nome_planilha)
+            # Registra que esse nome da planilha já estava resolvido,
+            # marcando o arquivo correspondente como usado (se encontrar)
+            match = encontrar_nome_aproximado(nome_norm, mapa_dados, usados)
+            if match:
+                resultado_matches[match] = nome_planilha
+            pulados += 1
+            linha += 1
+            continue
+
         nome_match = encontrar_nome_aproximado(nome_norm, mapa_dados, usados)
 
         if nome_match:
             votos = mapa_dados[nome_match][0]["votos"]
             ws[f"{COL_STATUS}{linha}"] = "ok"
             for i in range(min(max_colunas_itens, len(votos))):
-                ws.cell(row=linha, column=COL_INICIO + i).value = traduzir_voto(votos[i])
+                celula = ws.cell(row=linha, column=COL_INICIO + i)
+                if celula.value is None:
+                    celula.value = traduzir_voto(votos[i])
+            resultado_matches[nome_match] = nome_planilha
             encontrados += 1
         else:
             log.info("Sem match: %s", nome_planilha)
@@ -252,12 +281,43 @@ def escrever_excel(excel_path: Path, mapa_dados: dict[str, list[dict]]) -> Path:
 
         linha += 1
 
-    novo_arquivo = excel_path.with_stem(excel_path.stem + "_atualizado")
-    wb.save(novo_arquivo)
+    wb.save(excel_path)
 
-    log.info("Planilha atualizada: %s", novo_arquivo)
-    log.info("Encontrados: %d | Não encontrados: %d", encontrados, nao_encontrados)
-    return novo_arquivo
+    log.info("Planilha salva: %s", excel_path)
+    log.info(
+        "Adicionados: %d | Já existiam (pulados): %d | Sem match: %d",
+        encontrados, pulados, nao_encontrados,
+    )
+    return excel_path, resultado_matches
+
+
+# =========================
+#  DIAGNÓSTICO
+# =========================
+def auditar_pendentes(
+    mapa_dados: dict[str, list[dict]],
+    resultado_matches: dict[str, Optional[str]],
+) -> None:
+    """
+    Identifica arquivos da pasta que não foram associados a nenhuma linha com 'ok'.
+    Usa o resultado já calculado por escrever_excel — sem refazer nenhum match.
+    """
+    arquivos_matched = set(resultado_matches.keys())
+    todos_arquivos   = set(mapa_dados.keys())
+    sem_ok           = todos_arquivos - arquivos_matched
+
+    print("\n=== AUDITORIA DE PENDENTES ===")
+    if not sem_ok:
+        print("✓ Todos os arquivos da pasta já têm 'ok' na planilha.")
+        return
+
+    print(f"{len(sem_ok)} arquivo(s) sem 'ok':\n")
+    for nome_arquivo in sorted(sem_ok):
+        registros = mapa_dados[nome_arquivo]
+        caminhos  = ", ".join(r["arquivo"] for r in registros)
+        print(f"  ARQUIVO : {nome_arquivo}")
+        print(f"  CAMINHO : {caminhos}")
+        print()
 
 
 # =========================
@@ -278,7 +338,16 @@ def main() -> None:
         return
 
     mapa_dados = processar_dados(base_path)
-    escrever_excel(excel_path, mapa_dados)
+
+    modo = input("\nO que deseja fazer?\n  1 - Preencher planilha\n  2 - Auditar pendentes\n  3 - Ambos\nOpção: ").strip()
+
+    # escrever_excel sempre roda para manter o set de usados completo,
+    # inclusive para linhas já com "ok" — isso garante que a auditoria
+    # receba o mapa de matches correto sem refazer nenhuma lógica.
+    _, resultado_matches = escrever_excel(excel_path, mapa_dados)
+
+    if modo in ("2", "3"):
+        auditar_pendentes(mapa_dados, resultado_matches)
 
 
 if __name__ == "__main__":
